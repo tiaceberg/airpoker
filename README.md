@@ -108,31 +108,31 @@ airpoker/<br>
 ## 🛠 Setup & Development
 
 ### 1. Clone the repo
-git clone https://github.com/zeroxpapone/airpoker
+git clone https://github.com/zeroxpapone/airpoker<br>
 cd airpoker
 ### 2. Install frontend
-bash
-Copy code
-cd frontend
-npm install
+bash<br>
+Copy code<br>
+cd frontend<br>
+npm install<br>
 npm run dev
 ### 3. Firebase
-Create a Firebase project
-
-Enable:
-
-Anonymous Authentication
-
-Firestore
-
-Hosting
-
-Copy the config into frontend/src/lib/firebase.ts
+Create a Firebase project<br>
+<br>
+Enable:<br>
+<br>
+Anonymous Authentication<br>
+<br>
+Firestore<br>
+<br>
+Hosting<br>
+<br>
+Copy the config into frontend/src/lib/firebase.ts<br>
 
 ### 4. Deploy
-bash
-Copy code
-firebase deploy
+bash<br>
+Copy code<br>
+firebase deploy<br>
 
 ---
 
