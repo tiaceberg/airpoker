@@ -171,11 +171,11 @@ If you want to improve logic such as side pot calculation or add new features, f
 
 ---
 
-##📜 License
+## 📜 License
 MIT License. Free to use, modify, or adapt.
 
 ---
 
-##💡 Philosophy
+## 💡 Philosophy
 AirPoker isn’t about replacing real poker.
 It’s about removing the physical clutter while keeping the fun, chaos, and psychology of live games intact.
