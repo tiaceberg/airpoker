@@ -82,44 +82,41 @@ Single-page webapp accessible via any modern browser.
 
 ## 📁 Project Structure
 
-airpoker/
-│
-├── frontend/ # React webapp
-│ ├── src/
-│ │ ├── components/ # UI components
-│ │ ├── hooks/ # Custom hooks (auth, tables, hands)
-│ │ ├── lib/ # Firebase setup and API helpers
-│ │ ├── styles/ # Global CSS / Tailwind
-│ │ └── App.tsx
-│ └── package.json
-│
-└── firebase/ # Firebase project (Firestore, Auth, Functions)
-├── functions/
-│ ├── src/
-│ │ ├── onActionCreated.ts
-│ │ └── onWinnerVotingUpdated.ts
-│ └── package.json
-├── firestore.rules
-├── firestore.indexes.json
-└── firebase.json
-
-yaml
-Copy code
+airpoker/<br>
+│<br>
+├── frontend/ # React webapp<br>
+│ ├── src/<br>
+│ │ ├── components/ # UI components<br>
+│ │ ├── hooks/ # Custom hooks (auth, tables, hands)<br>
+│ │ ├── lib/ # Firebase setup and API helpers<br>
+│ │ ├── styles/ # Global CSS / Tailwind<br>
+│ │ └── App.tsx<br>
+│ └── package.json<br>
+│<br>
+└── firebase/ # Firebase project (Firestore, Auth, Functions)<br>
+├── functions/<br>
+│ ├── src/<br>
+│ │ ├── onActionCreated.ts<br>
+│ │ └── onWinnerVotingUpdated.ts<br>
+│ └── package.json<br>
+├── firestore.rules<br>
+├── firestore.indexes.json<br>
+└── firebase.json<br>
 
 ---
 
 ## 🛠 Setup & Development
 
 ### 1. Clone the repo
-git clone https://github.com/yourusername/airpoker
+git clone https://github.com/zeroxpapone/airpoker
 cd airpoker
-2. Install frontend
+### 2. Install frontend
 bash
 Copy code
 cd frontend
 npm install
 npm run dev
-3. Firebase
+### 3. Firebase
 Create a Firebase project
 
 Enable:
@@ -132,11 +129,14 @@ Hosting
 
 Copy the config into frontend/src/lib/firebase.ts
 
-4. Deploy
+### 4. Deploy
 bash
 Copy code
 firebase deploy
-🧪 Development Roadmap (MVP → Advanced)
+
+---
+
+## 🧪 Development Roadmap (MVP → Advanced)
 MVP
 Anonymous login
 
@@ -163,13 +163,19 @@ Game history & replay
 
 Table presets & private modes
 
-🤝 Contributing
+---
+
+## 🤝 Contributing
 Pull requests are welcome.
 If you want to improve logic such as side pot calculation or add new features, feel free to open an issue.
 
-📜 License
+---
+
+##📜 License
 MIT License. Free to use, modify, or adapt.
 
-💡 Philosophy
+---
+
+##💡 Philosophy
 AirPoker isn’t about replacing real poker.
 It’s about removing the physical clutter while keeping the fun, chaos, and psychology of live games intact.
