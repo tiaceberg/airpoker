@@ -392,7 +392,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
 
     let target = 0;
     if (type === "1BB") {
-      target = currentBet === 0 ? bb : Math.max(currentBet + bb, bb);
+      target = currentBet === 0 ? bb : Math.max(currentBet + bb);
     } else if (type === "HALF_POT") {
       target = Math.max(currentBet || 0, Math.floor(pot / 2));
     } else if (type === "POT") {
@@ -413,6 +413,10 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
     if (!canBetOrRaise || !myPlayer) return;
     if (!betAmount || betAmount <= myRoundBet) {
       setActionError("Importo bet/raise non valido.");
+      return;
+    }
+    if (currentBet % 5 !== 0) {
+      setActionError("La puntata deve essere multipla di 5");
       return;
     }
     await doAction("BET", betAmount);
@@ -1053,7 +1057,8 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
 
               <input
                 type="range"
-                min={0}
+                min={currentBet+5}
+                step={5}
                 max={myRoundBet + myPlayer.stack}
                 value={betAmount}
                 onChange={(e) => setBetAmount(Number(e.target.value))}

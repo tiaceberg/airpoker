@@ -47,9 +47,6 @@ export async function createTable(data: CreateTableInput, user: User | null) {
     throw new Error("User non presente durante la creazione del tavolo");
   }
 
-  const uid = user.uid;
-  const displayName = user.displayName || "Giocatore";
-
   const tableRef = await addDoc(collection(db, "tables"), {
     name: data.name,
     initialStack: data.initialStack,
@@ -367,6 +364,11 @@ export async function playerAction(
 
   const handData = handSnap.data() as any as HandData;
 
+  // Indice dell'ultimo giocatore che ha effettuato una bet/raise (aggressore)
+  // Se non presente nel documento, di default usiamo firstToActIndex
+  let lastAggressorIndex: number =
+    (handData as any).lastAggressorIndex ?? handData.firstToActIndex;
+
   if (handData.currentTurnIndex == null || handData.currentTurnIndex < 0) {
     throw new Error("Non è il turno di nessuno al momento");
   }
@@ -500,6 +502,9 @@ let nextTurnIndex = nextTurnIndexCandidate;
       pot += diff;
       currentBet = target;
       currentPlayer.stack -= diff;
+
+      // L'ultimo aggressore diventa chi effettua questa bet/raise
+      lastAggressorIndex = currentIndex;
       break;
     }
 
@@ -529,12 +534,11 @@ if (activePlayers.length <= 1) {
   });
 
   // Round chiuso SOLO se:
-  // - tutti hanno matched
-  // - il prossimo a parlare sarebbe di nuovo il "firstToAct"
+  // - tutti gli attivi hanno matched
+  // - il prossimo a parlare sarebbe di nuovo l'ultimo aggressore
   if (
     allMatched &&
-    action !== "BET" &&
-    nextTurnIndexCandidate === handData.firstToActIndex
+    nextTurnIndexCandidate === lastAggressorIndex
   ) {
     nextTurnIndex = -1;
   }
@@ -562,7 +566,8 @@ if (activePlayers.length <= 1) {
     currentBet,
     roundBets,
     currentTurnIndex: nextTurnIndex,
-    stage: newStage
+    stage: newStage,
+    lastAggressorIndex
   });
 
   await batch.commit();

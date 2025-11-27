@@ -80,7 +80,7 @@ export default function LoginPage() {
               color: "#9ca3af"
             }}
           >
-            Texas Hold&apos;em tra amici, senza fiches. Solo carte vere e
+            Texas Hold&apos;em tra amici, senza fiches.<br/> Solo carte e
             telefoni.
           </p>
         </div>
@@ -130,7 +130,7 @@ export default function LoginPage() {
                 fontSize: "0.9rem"
               }}
               type="text"
-              placeholder="Es: Ema, Giane, Mira..."
+              placeholder="Es. Ciccions, Tira, Mishi..."
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
               autoComplete="off"

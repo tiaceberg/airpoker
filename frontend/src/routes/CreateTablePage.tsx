@@ -8,7 +8,7 @@ export default function CreateTablePage() {
   const navigate = useNavigate();
 
   const [name, setName] = useState("");
-  const [initialStack, setInitialStack] = useState(200);
+  const [initialStack, setInitialStack] = useState(100);
   const [smallBlind, setSmallBlind] = useState(5);
   const [bigBlind, setBigBlind] = useState(10);
   const [password, setPassword] = useState("");
@@ -94,8 +94,8 @@ export default function CreateTablePage() {
           >
             <input
               style={inputStyle}
-              type="number"
-              min={50}
+              type="text"
+              min={100}
               step={10}
               value={initialStack}
               onChange={(e) => setInitialStack(Number(e.target.value))}
@@ -112,9 +112,9 @@ export default function CreateTablePage() {
             <Field label="Small Blind">
               <input
                 style={inputStyle}
-                type="number"
-                min={1}
-                step={1}
+                type="text"
+                min={5}
+                step={5}
                 value={smallBlind}
                 onChange={(e) => setSmallBlind(Number(e.target.value))}
               />
@@ -122,9 +122,9 @@ export default function CreateTablePage() {
             <Field label="Big Blind">
               <input
                 style={inputStyle}
-                type="number"
-                min={2}
-                step={1}
+                type="text"
+                min={10}
+                step={5}
                 value={bigBlind}
                 onChange={(e) => setBigBlind(Number(e.target.value))}
               />
