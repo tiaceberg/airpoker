@@ -42,40 +42,56 @@ export interface HandData {
 /**
  * Crea un nuovo tavolo e aggiunge l'utente come primo giocatore (seatIndex 0).
  */
+function generateShortTableId() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  let id = "";
+  for (let i = 0; i < 5; i++) {
+    id += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return id;
+}
+
+// genera un ID univoco controllando che il doc non esista
+async function generateUniqueTableId(): Promise<string> {
+  const tablesCol = collection(db, "tables");
+
+  while (true) {
+    const candidate = generateShortTableId();
+    const candidateRef = doc(tablesCol, candidate);
+    const snap = await getDoc(candidateRef);
+    if (!snap.exists()) {
+      return candidate;
+    }
+    // se esiste già, riprova
+  }
+}
+
 export async function createTable(data: CreateTableInput, user: User | null) {
   if (!user) {
     throw new Error("User non presente durante la creazione del tavolo");
   }
 
-  const tableRef = await addDoc(collection(db, "tables"), {
-    name: data.name,
-    initialStack: data.initialStack,
-    smallBlind: data.smallBlind,
-    bigBlind: data.bigBlind,
-    hostId: user.uid,
-    state: "LOBBY",
-    password: data.password || null,
-    createdAt: serverTimestamp(),
-    endedAt: null,
-    currentHandId: null
-  });
+  const uid = user.uid;
 
-  const tableId = tableRef.id;
+  const tablesCol = collection(db, "tables");
 
+  // 1) genera ID corto e univoco
+  const tableId = await generateUniqueTableId();
+  const tableRef = doc(tablesCol, tableId);
+
+  // 2) crea il documento tavolo con quell'ID
   await setDoc(tableRef, {
     name: data.name,
     initialStack: data.initialStack,
     smallBlind: data.smallBlind,
     bigBlind: data.bigBlind,
-    hostId: user.uid,
+    hostId: uid,
     state: "LOBBY",
     password: data.password || null,
     createdAt: serverTimestamp(),
     endedAt: null,
-    currentHandId: null
-});
-
-
+    currentHandId: null,
+  });
 
   return tableId;
 }
