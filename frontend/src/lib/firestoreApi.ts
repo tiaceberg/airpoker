@@ -35,6 +35,8 @@ export interface HandData {
   currentBet: number;
   roundBets: Record<string, number>;
   firstToActIndex: number;
+  votingOpen?: boolean;
+  votes?: Record<string, string>;
   winnerId?: string | null;
 }
 
@@ -75,11 +77,9 @@ export async function createTable(data: CreateTableInput, user: User | null) {
 
   const tablesCol = collection(db, "tables");
 
-  // 1) genera ID corto e univoco
   const tableId = await generateUniqueTableId();
   const tableRef = doc(tablesCol, tableId);
 
-  // 2) crea il documento tavolo con quell'ID
   await setDoc(tableRef, {
     name: data.name,
     initialStack: data.initialStack,
@@ -91,6 +91,19 @@ export async function createTable(data: CreateTableInput, user: User | null) {
     createdAt: serverTimestamp(),
     endedAt: null,
     currentHandId: null,
+  });
+
+  // Aggiunge subito l'host come giocatore seduto al tavolo (seatIndex 0)
+  const playerRef = doc(db, "tables", tableId, "players", uid);
+  await setDoc(playerRef, {
+    userId: uid,
+    displayName: user.displayName,
+    stack: data.initialStack,
+    seatIndex: 0,
+    isReady: false,
+    isFolded: false,
+    isSittingOut: false,
+    joinedAt: serverTimestamp(),
   });
 
   return tableId;
@@ -338,6 +351,133 @@ export async function endGame(tableId: string) {
   });
 }
 
+// Avvia una nuova mano dopo che la precedente è terminata (showdown completato)
+export async function startNextHand(tableId: string, user: User) {
+  const tableRef = doc(db, "tables", tableId);
+  const tableSnap = await getDoc(tableRef);
+  if (!tableSnap.exists()) throw new Error("Tavolo inesistente.");
+  const tableData = tableSnap.data() as any;
+
+  if (tableData.hostId !== user.uid) {
+    throw new Error("Solo l'host può avviare la mano successiva.");
+  }
+
+  if (tableData.state !== "IN_GAME") {
+    throw new Error("Il tavolo non è in stato di gioco.");
+  }
+
+  const prevHandId: string | null = tableData.currentHandId ?? null;
+  if (!prevHandId) throw new Error("Nessuna mano precedente trovata.");
+
+  const prevHandRef = doc(db, "tables", tableId, "hands", prevHandId);
+  const prevHandSnap = await getDoc(prevHandRef);
+  if (!prevHandSnap.exists()) throw new Error("Mano precedente non trovata.");
+
+  const prevHand = prevHandSnap.data() as any as HandData;
+  if (prevHand.stage !== "SHOWDOWN") {
+    throw new Error("La mano corrente non è ancora in SHOWDOWN.");
+  }
+
+  // Prendiamo i giocatori ordinati per seatIndex
+  const playersRef = collection(db, "tables", tableId, "players");
+  const playersQuery = query(playersRef, orderBy("seatIndex", "asc"));
+  const playersSnap = await getDocs(playersQuery);
+  const players = playersSnap.docs.map((d) => {
+    const data = d.data() as any;
+    return {
+      id: d.id,
+      ref: d.ref,
+      stack: Number(data.stack) || 0,
+      seatIndex: data.seatIndex,
+      isFolded: !!data.isFolded,
+      isSittingOut: !!data.isSittingOut
+    };
+  });
+
+  if (players.length < 2) {
+    throw new Error("Servono almeno 2 giocatori per una nuova mano.");
+  }
+
+  const numPlayers = players.length;
+
+  // Ruotiamo dealer, SB e BB di uno rispetto alla mano precedente
+  const dealerIndex = (prevHand.dealerIndex + 1) % numPlayers;
+  const smallBlindIndex = (dealerIndex + 1) % numPlayers;
+  const bigBlindIndex = (dealerIndex + 2) % numPlayers;
+  const currentTurnIndex = (bigBlindIndex + 1) % numPlayers; // UTG
+
+  const sbAmount = Number(tableData.smallBlind) || 0;
+  const bbAmount = Number(tableData.bigBlind) || 0;
+
+  const firstToActIndex = currentTurnIndex;
+
+  let pot = 0;
+  let currentBet = 0;
+  const roundBets: Record<string, number> = {};
+
+  if (numPlayers >= 2) {
+    const sbPlayer = players[smallBlindIndex];
+    const bbPlayer = players[bigBlindIndex];
+
+    if (sbAmount > 0) {
+      roundBets[sbPlayer.id] = sbAmount;
+      pot += sbAmount;
+    }
+
+    if (bbAmount > 0) {
+      roundBets[bbPlayer.id] = (roundBets[bbPlayer.id] || 0) + bbAmount;
+      pot += bbAmount;
+      currentBet = bbAmount;
+    }
+  }
+
+  const handsRef = collection(db, "tables", tableId, "hands");
+
+  const newHand: HandData = {
+    handNumber: (prevHand.handNumber || 1) + 1,
+    stage: "PREFLOP",
+    dealerIndex,
+    smallBlindIndex,
+    bigBlindIndex,
+    currentTurnIndex,
+    pot,
+    currentBet,
+    roundBets,
+    firstToActIndex
+  };
+
+  const newHandRef = await addDoc(handsRef, {
+    ...newHand,
+    createdAt: serverTimestamp()
+  });
+
+  const batch = writeBatch(db);
+
+  // Aggiorniamo il tavolo con la nuova mano corrente
+  batch.update(tableRef, {
+    currentHandId: newHandRef.id
+  });
+
+  // Reset stato giocatori per la nuova mano (isFolded false)
+  players.forEach((p, index) => {
+    let newStack = p.stack;
+
+    if (index === smallBlindIndex && sbAmount > 0) {
+      newStack = Math.max(0, newStack - sbAmount);
+    }
+    if (index === bigBlindIndex && bbAmount > 0) {
+      newStack = Math.max(0, newStack - bbAmount);
+    }
+
+    batch.update(p.ref, {
+      isFolded: false,
+      stack: newStack
+    });
+  });
+
+  await batch.commit();
+}
+
 
 export type PlayerActionType = "CHECK" | "CALL" | "BET" | "FOLD";
 
@@ -549,14 +689,65 @@ if (activePlayers.length <= 1) {
     return b === currentBet;
   });
 
-  // Round chiuso SOLO se:
-  // - tutti gli attivi hanno matched
-  // - il prossimo a parlare sarebbe di nuovo l'ultimo aggressore
-  if (
-    allMatched &&
-    nextTurnIndexCandidate === lastAggressorIndex
-  ) {
-    nextTurnIndex = -1;
+  if (handData.stage === "PREFLOP") {
+    // PRE-FLOP: il giro deve concludersi dopo il turno del BB
+    // (o dopo chiunque lo segua, in caso di raise), cioè dopo
+    // che il giro è tornato al firstToAct originario e tutti
+    // hanno eguagliato la puntata.
+    const firstToAct = handData.firstToActIndex; // UTG preflop
+    if (
+      allMatched &&
+      nextTurnIndexCandidate === firstToAct &&
+      currentIndex !== firstToAct
+    ) {
+      // nessuno da far parlare: chiudiamo il giro preflop
+      nextTurnIndex = -1;
+    }
+  } else {
+    // POST-FLOP (FLOP, TURN, RIVER)
+    // Da qui l'ordine DEVE essere: SB -> BB -> tutti gli altri.
+    // L'ordine è già garantito da seatIndex e currentTurnIndex;
+    // qui gestiamo solo la chiusura del giro quando tutti hanno
+    // matched e l'azione ha completato il suo ciclo.
+
+    if (currentBet === 0) {
+      // Solo check: chiudiamo il round quando, partendo da firstToAct,
+      // tutti hanno avuto la possibilità di agire e l'azione tornerebbe
+      // nuovamente a firstToAct.
+      const firstToAct = handData.firstToActIndex;
+      if (
+        allMatched &&
+        nextTurnIndexCandidate === firstToAct &&
+        currentIndex !== firstToAct
+      ) {
+        nextTurnIndex = -1;
+      }
+    } else {
+      // C'è stata aggressione: teniamo traccia dell'ultimo aggressore
+      // e chiudiamo il giro quando l'azione torna al giocatore
+      // immediatamente precedente a lui e tutti hanno matched.
+
+      function getPreviousActiveIndex(fromIndex: number): number {
+        for (let i = 1; i <= numPlayers; i++) {
+          const idx = (fromIndex - i + numPlayers) % numPlayers;
+          const p = players[idx];
+          if (!p.isFolded && !p.isSittingOut && p.stack > 0) {
+            return idx;
+          }
+        }
+        return -1;
+      }
+
+      const closerIndex = getPreviousActiveIndex(lastAggressorIndex);
+
+      if (
+        allMatched &&
+        closerIndex !== -1 &&
+        nextTurnIndexCandidate === closerIndex
+      ) {
+        nextTurnIndex = -1;
+      }
+    }
   }
 }
 
@@ -609,10 +800,6 @@ export async function advanceStage(tableId: string, user: User) {
 
   const hand = handSnap.data() as any as HandData;
 
-  if (hand.currentTurnIndex !== -1) {
-    throw new Error("Il giro di puntate non è ancora chiuso.");
-  }
-
   let nextStage: HandData["stage"] = hand.stage;
   if (hand.stage === "PREFLOP") nextStage = "FLOP";
   else if (hand.stage === "FLOP") nextStage = "TURN";
@@ -637,10 +824,15 @@ export async function advanceStage(tableId: string, user: User) {
     });
 
     const n = players.length;
-    const startIndex =
-      nextStage === "FLOP"
-        ? (hand.bigBlindIndex + 1) % n
-        : (hand.dealerIndex + 1) % n;
+
+    // AL FLOP deve partire SEMPRE lo SMALL BLIND.
+    // Da TURN e RIVER parte il giocatore dopo il dealer.
+    let startIndex: number;
+    if (nextStage === "FLOP") {
+      startIndex = hand.smallBlindIndex % n;
+    } else {
+      startIndex = (hand.dealerIndex + 1) % n;
+    }
 
     let idx = startIndex;
     for (let i = 0; i < n; i++) {
@@ -652,14 +844,102 @@ export async function advanceStage(tableId: string, user: User) {
       idx = (idx + 1) % n;
     }
   }
-
-  await updateDoc(handRef, {
+  const updateData: any = {
     stage: nextStage,
     currentBet: 0,
     roundBets: {},
     currentTurnIndex: nextStage === "SHOWDOWN" ? -1 : firstToActIndex,
     firstToActIndex
+  };
+
+  // Se passiamo a SHOWDOWN dopo il river, apriamo la votazione
+  if (hand.stage === "RIVER" && nextStage === "SHOWDOWN") {
+    updateData.votingOpen = true;
+    updateData.votes = {};
+  }
+
+  await updateDoc(handRef, updateData);
+}
+
+
+// Aggiunge o aggiorna il voto di un giocatore sul vincitore della mano
+export async function voteWinner(
+  tableId: string,
+  user: User,
+  votedUserId: string
+) {
+  const tableRef = doc(db, "tables", tableId);
+  const tableSnap = await getDoc(tableRef);
+  if (!tableSnap.exists()) throw new Error("Tavolo inesistente.");
+  const tableData = tableSnap.data() as any;
+
+  const currentHandId = tableData.currentHandId;
+  if (!currentHandId) throw new Error("Nessuna mano corrente.");
+
+  const handRef = doc(db, "tables", tableId, "hands", currentHandId);
+  const handSnap = await getDoc(handRef);
+  if (!handSnap.exists()) throw new Error("Mano non trovata.");
+
+  const hand = handSnap.data() as any as HandData;
+  if (!hand.votingOpen) throw new Error("Votazione non aperta per questa mano.");
+
+  // Recuperiamo tutti i giocatori attivi al tavolo per sapere quanti devono votare
+  const playersRef = collection(db, "tables", tableId, "players");
+  const playersSnap = await getDocs(playersRef);
+  const players = playersSnap.docs.map((d) => d.data() as any);
+
+  const totalVoters = players.filter((p) => !p.isSittingOut).length || players.length;
+
+  const currentVotes: Record<string, string> = { ...(hand.votes || {}) };
+  currentVotes[user.uid] = votedUserId;
+
+  // Conta i voti per ciascun candidato
+  const counts: Record<string, number> = {};
+  Object.values(currentVotes).forEach((candidateId) => {
+    counts[candidateId] = (counts[candidateId] || 0) + 1;
   });
+
+  const votesCount = Object.keys(currentVotes).length;
+
+  let winnerId: string | null = null;
+
+  // Se hanno votato tutti, scegliamo il candidato con più voti
+  if (votesCount >= totalVoters) {
+    let maxVotes = -1;
+    for (const [candidateId, c] of Object.entries(counts)) {
+      if (c > maxVotes) {
+        maxVotes = c;
+        winnerId = candidateId;
+      }
+    }
+  }
+
+  const batch = writeBatch(db);
+
+  // Aggiorna la mano con voti e, se presente, winnerId e chiusura votazione
+  const handUpdate: any = {
+    votes: currentVotes
+  };
+
+  if (winnerId) {
+    handUpdate.winnerId = winnerId;
+    handUpdate.votingOpen = false;
+  }
+
+  batch.update(handRef, handUpdate);
+
+  // Se abbiamo un vincitore, trasferiamo il piatto
+  if (winnerId) {
+    const winnerPlayerRef = doc(db, "tables", tableId, "players", winnerId);
+    const winnerSnap = await getDoc(winnerPlayerRef);
+    if (winnerSnap.exists()) {
+      const winnerData = winnerSnap.data() as any;
+      const newStack = (Number(winnerData.stack) || 0) + (hand.pot || 0);
+      batch.update(winnerPlayerRef, { stack: newStack });
+    }
+  }
+
+  await batch.commit();
 }
 
 

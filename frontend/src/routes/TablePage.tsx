@@ -18,7 +18,9 @@ import {
   leaveTable,
   setSittingOut,
   endGame,
-  advanceStage
+  advanceStage,
+  voteWinner,
+  startNextHand
 } from "../lib/firestoreApi";
 
 interface TableData {
@@ -45,13 +47,19 @@ interface PlayerData {
   isSittingOut?: boolean;
 }
 
+interface ExtendedHandData extends HandData {
+  votingOpen?: boolean;
+  votes?: Record<string, string>;
+  winnerId?: string | null;
+}
+
 export default function TablePage() {
   const { tableId } = useParams();
   const { user } = useAuth();
 
   const [table, setTable] = useState<TableData | null>(null);
   const [players, setPlayers] = useState<PlayerData[]>([]);
-  const [currentHand, setCurrentHand] = useState<HandData | null>(null);
+  const [currentHand, setCurrentHand] = useState<ExtendedHandData | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -152,17 +160,20 @@ export default function TablePage() {
           return;
         }
         const d = snap.data() as any;
-        const hand: HandData = {
-            handNumber: d.handNumber,
-            stage: d.stage,
-            dealerIndex: d.dealerIndex,
-            smallBlindIndex: d.smallBlindIndex,
-            bigBlindIndex: d.bigBlindIndex,
-            currentTurnIndex: d.currentTurnIndex,
-            pot: d.pot,
-            currentBet: d.currentBet,
-            roundBets: d.roundBets || {},
-            firstToActIndex: 0
+        const hand: ExtendedHandData = {
+          handNumber: d.handNumber,
+          stage: d.stage,
+          dealerIndex: d.dealerIndex,
+          smallBlindIndex: d.smallBlindIndex,
+          bigBlindIndex: d.bigBlindIndex,
+          currentTurnIndex: d.currentTurnIndex,
+          pot: d.pot,
+          currentBet: d.currentBet,
+          roundBets: d.roundBets || {},
+          firstToActIndex: d.firstToActIndex ?? 0,
+          votingOpen: d.votingOpen ?? false,
+          votes: d.votes || {},
+          winnerId: d.winnerId ?? null
         };
         setCurrentHand(hand);
       },
@@ -218,6 +229,14 @@ export default function TablePage() {
   const canCall = isMyTurn && diffToCall > 0 && (myPlayer?.stack ?? 0) >= diffToCall;
   const canBetOrRaise =
     isMyTurn && myPlayer && myPlayer.stack > 0 && currentHand != null;
+
+  const votingOpen =
+    inGame && currentHand?.stage === "SHOWDOWN" && currentHand.votingOpen;
+  const hasWinner =
+    inGame && currentHand?.stage === "SHOWDOWN" && !!currentHand.winnerId;
+
+  const myVoteTargetId =
+    currentHand && user ? currentHand.votes?.[user.uid] ?? null : null;
 
   const allReady =
     table.state === "LOBBY" &&
@@ -309,6 +328,32 @@ async function handleAdvanceStage() {
   } catch (err) {
     console.error(err);
     setActionError((err as any)?.message || "Errore nell'avanzare la mano.");
+  }
+}
+
+async function handleVote(candidateUserId: string) {
+  if (!user || !tableId) return;
+  if (!currentHand || !votingOpen) return;
+  try {
+    await voteWinner(tableId, user, candidateUserId);
+  } catch (err) {
+    console.error(err);
+    setActionError((err as any)?.message || "Errore durante la votazione.");
+  }
+}
+
+async function handleNextHand() {
+  if (!user || !tableId) return;
+  if (!isHost) return;
+  if (!currentHand || !currentHand.winnerId) return;
+
+  try {
+    await startNextHand(tableId, user);
+  } catch (err) {
+    console.error(err);
+    setActionError(
+      (err as any)?.message || "Errore nell'avvio della mano successiva."
+    );
   }
 }
 
@@ -430,7 +475,6 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
     if (index === currentHand.dealerIndex) badges.push("D");
     if (index === currentHand.smallBlindIndex) badges.push("SB");
     if (index === currentHand.bigBlindIndex) badges.push("BB");
-    if (index === currentHand.currentTurnIndex) badges.push("TURNO");
 
     if (badges.length === 0) return null;
 
@@ -679,7 +723,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
     );
   }
 
-  // ---------- RENDER GAME (UI "FIGA") ----------
+  // ---------- RENDER GAME ----------
 
   function renderGame() {
     if (!table) return null;
@@ -750,7 +794,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
       <button
         onClick={handleEndGame}
         style={{
-          padding: "0.3rem 0.7rem",
+          padding: "0.3rem 0.6rem",
           borderRadius: "999px",
           border: "none",
           backgroundColor: "#ef4444",
@@ -822,27 +866,52 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
       : "In attesa..."}
   </div>
 
-  {isHost &&
-    currentHand &&
-    currentHand.currentTurnIndex === -1 &&
-    currentHand.stage !== "SHOWDOWN" && (
-      <button
-        onClick={handleAdvanceStage}
-        style={{
-          marginTop: "0.5rem",
-          padding: "0.35rem 0.8rem",
-          borderRadius: "999px",
-          border: "none",
-          backgroundColor: "#22c55e",
-          color: "#020617",
-          fontSize: "0.85rem",
-          fontWeight: 600,
-          cursor: "pointer"
-        }}
-      >
-        Prosegui ({currentHand.stage} completato)
-      </button>
-    )}
+  {isHost && currentHand && currentHand.currentTurnIndex === -1 && (
+    <div
+      style={{
+        marginTop: "0.5rem",
+        display: "flex",
+        gap: "0.5rem",
+        justifyContent: "center"
+      }}
+    >
+      {currentHand.stage !== "SHOWDOWN" && (
+        <button
+          onClick={handleAdvanceStage}
+          style={{
+            padding: "0.35rem 0.8rem",
+            borderRadius: "999px",
+            border: "none",
+            backgroundColor: "#22c55e",
+            color: "#020617",
+            fontSize: "0.85rem",
+            fontWeight: 600,
+            cursor: "pointer"
+          }}
+        >
+          Prosegui ({currentHand.stage} completato)
+        </button>
+      )}
+
+      {currentHand.stage === "SHOWDOWN" && hasWinner && (
+        <button
+          onClick={handleNextHand}
+          style={{
+            padding: "0.35rem 0.8rem",
+            borderRadius: "999px",
+            border: "none",
+            backgroundColor: "#22c55e",
+            color: "#020617",
+            fontSize: "0.85rem",
+            fontWeight: 600,
+            cursor: "pointer"
+          }}
+        >
+          Prossima mano
+        </button>
+      )}
+    </div>
+  )}
 </div>
 
 
@@ -868,23 +937,34 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                     top,
                     left,
                     transform: "translate(-50%, -50%)",
-                    minWidth: "120px"
+                    minWidth: "50px",
                   }}
                 >
                   <div
                     style={{
                       borderRadius: "999px",
-                      padding: "0.4rem 0.7rem",
+                      padding: "0.4rem 0.6rem",
                       backgroundColor: isMe
                         ? "rgba(34,197,94,0.15)"
                         : "rgba(15,23,42,0.9)",
                       border: isTurn
                         ? "2px solid #22c55e"
+                        : myVoteTargetId === p.userId && votingOpen
+                        ? "2px solid #22c55e"
                         : "1px solid #1e293b",
                       boxShadow: isTurn
                         ? "0 0 15px rgba(34,197,94,0.6)"
                         : "0 0 8px rgba(15,23,42,0.6)",
-                      fontSize: "0.8rem"
+                      fontSize: "0.7rem",
+                      cursor:
+                        votingOpen && currentHand?.stage === "SHOWDOWN"
+                          ? "pointer"
+                          : "default"
+                    }}
+                    onClick={() => {
+                      if (votingOpen && currentHand?.stage === "SHOWDOWN") {
+                        handleVote(p.userId);
+                      }
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center" }}>
@@ -909,8 +989,10 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                         fontSize: "0.75rem"
                       }}
                     >
-                      Stack: {p.stack} • Puntata: {roundBet}
+                      {p.stack} • {roundBet}
                       {p.isFolded && " • Foldato"}
+                      {votingOpen && myVoteTargetId === p.userId &&
+                        " • (tua scelta)"}
                     </div>
                   </div>
                 </div>
@@ -928,6 +1010,52 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
             borderTop: "1px solid #1e293b"
           }}
         >
+          {hasWinner && currentHand?.winnerId && (
+            <div
+              style={{
+                padding: "0.6rem 0.8rem",
+                borderRadius: "0.75rem",
+                border: "1px solid #1e293b",
+                backgroundColor: "rgba(15,23,42,0.98)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.5rem"
+              }}
+            >
+              <div
+                style={{
+                  fontSize: "0.85rem",
+                  color: "#e5e7eb"
+                }}
+              >
+                Vincitore della mano:{" "}
+                <strong>
+                  {(
+                    players.find((p) => p.userId === currentHand.winnerId)
+                      ?.displayName || "Sconosciuto"
+                  )}
+                </strong>
+              </div>
+              {isHost && (
+                <button
+                  onClick={handleNextHand}
+                  style={{
+                    padding: "0.4rem 0.8rem",
+                    borderRadius: "999px",
+                    border: "none",
+                    backgroundColor: "#22c55e",
+                    color: "#020617",
+                    fontSize: "0.85rem",
+                    fontWeight: 600,
+                    cursor: "pointer"
+                  }}
+                >
+                  Prossima mano
+                </button>
+              )}
+            </div>
+          )}
           {actionError && (
             <p style={{ fontSize: "0.8rem", color: "#f97373" }}>
               {actionError}
@@ -971,7 +1099,10 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                 onClick={() => doAction("FOLD")}
                 style={{
                   ...circleActionButton,
-                  backgroundColor: "#ef4444"
+                  backgroundColor: 
+                    isMyTurn 
+                      ? "#ef4444ff"
+                      : "#ef444473"
                 }}
               >
                 F
@@ -1048,7 +1179,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                 }}
               >
                 <span>
-                  Importo: <strong>{betAmount}</strong>
+                  Raise: <strong>{betAmount - (currentHand?.currentBet ?? 0)}</strong>
                 </span>
                 <span style={{ color: "#9ca3af" }}>
                   Stack: {myPlayer.stack}
