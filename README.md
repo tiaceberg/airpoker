@@ -1,4 +1,4 @@
-# 🃏 [AirPoker](https://www.aripoker.site)  
+# 🃏 [AirPoker](https://www.airpoker.site)  
 **Play Texas Hold’em anywhere using real cards and your phone as the betting system.**
 
 AirPoker is a lightweight, browser-based webapp designed to simplify live poker games with friends.  
