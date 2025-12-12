@@ -20,6 +20,7 @@ import {
   endGame,
   advanceStage,
   voteWinner,
+  confirmWinners,
   startNextHand
 } from "../lib/firestoreApi";
 
@@ -51,12 +52,14 @@ interface ExtendedHandData extends HandData {
   votingOpen?: boolean;
   votes?: Record<string, string>;
   winnerId?: string | null;
+  winnerIds?: string[];  // ✅ Aggiungi questa riga
 }
 
 export default function TablePage() {
   const { tableId } = useParams();
   const { user } = useAuth();
 
+  const [selectedWinners, setSelectedWinners] = useState<string[]>([]);
   const [table, setTable] = useState<TableData | null>(null);
   const [players, setPlayers] = useState<PlayerData[]>([]);
   const [currentHand, setCurrentHand] = useState<ExtendedHandData | null>(null);
@@ -173,7 +176,8 @@ export default function TablePage() {
           firstToActIndex: d.firstToActIndex ?? 0,
           votingOpen: d.votingOpen ?? false,
           votes: d.votes || {},
-          winnerId: d.winnerId ?? null
+          winnerId: d.winnerId ?? null,
+          winnerIds: d.winnerIds || [] 
         };
         setCurrentHand(hand);
       },
@@ -186,6 +190,13 @@ export default function TablePage() {
       unsub();
     };
   }, [tableId, table?.currentHandId]);
+
+  // Reset selezione vincitori quando cambia mano
+  useEffect(() => {
+    setSelectedWinners([]);
+    setActionError(null);
+  }, [currentHand?.handNumber]);
+
 
   if (!tableId) {
     return <p>ID tavolo mancante.</p>;
@@ -233,7 +244,9 @@ export default function TablePage() {
   const votingOpen =
     inGame && currentHand?.stage === "SHOWDOWN" && currentHand.votingOpen;
   const hasWinner =
-    inGame && currentHand?.stage === "SHOWDOWN" && !!currentHand.winnerId;
+    inGame && 
+    currentHand?.stage === "SHOWDOWN" && 
+    (!!currentHand.winnerId || (currentHand.winnerIds && currentHand.winnerIds.length > 0));
 
   const myVoteTargetId =
     currentHand && user ? currentHand.votes?.[user.uid] ?? null : null;
@@ -345,7 +358,11 @@ async function handleVote(candidateUserId: string) {
 async function handleNextHand() {
   if (!user || !tableId) return;
   if (!isHost) return;
-  if (!currentHand || !currentHand.winnerId) return;
+  if (!currentHand) return;
+  
+  // ✅ Controlla sia winnerId che winnerIds
+  const hasWinners = currentHand.winnerId || (currentHand.winnerIds && currentHand.winnerIds.length > 0);
+  if (!hasWinners) return;
 
   try {
     await startNextHand(tableId, user);
@@ -356,6 +373,7 @@ async function handleNextHand() {
     );
   }
 }
+
 
 async function handleEndGame() {
   if (!isHost || !tableId) return;
@@ -428,7 +446,7 @@ async function handleEndGame() {
     setShowBetPanel(false);
   }
 
-function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
+  function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
   if (!currentHand || !myPlayer || !table) return;
 
     const bb = table.bigBlind || 10;
@@ -506,6 +524,52 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
       left: `${left}%`
     };
   }
+
+  // Toglie/aggiunge un giocatore dalla lista dei vincitori selezionati
+function toggleWinnerSelection(userId: string) {
+  if (!user || !tableId) return;
+  if (!currentHand || !votingOpen) return;
+  
+  // Solo l'host può selezionare
+  if (!isHost) {
+    setActionError("Solo l'host può confermare i vincitori.");
+    return;
+  }
+  
+  setSelectedWinners(prev => {
+    if (prev.includes(userId)) {
+      // Rimuovi se già selezionato
+      return prev.filter(id => id !== userId);
+    } else {
+      // Aggiungi alla selezione
+      return [...prev, userId];
+    }
+  });
+}
+
+// Conferma i vincitori selezionati
+async function handleConfirmWinners() {
+  if (!user || !tableId) return;
+  if (!currentHand || !votingOpen) return;
+  if (!isHost) {
+    setActionError("Solo l'host può confermare i vincitori.");
+    return;
+  }
+  
+  if (selectedWinners.length === 0) {
+    setActionError("Devi selezionare almeno un vincitore.");
+    return;
+  }
+  
+  try {
+    await confirmWinners(tableId, user, selectedWinners);
+    setSelectedWinners([]); // Reset selezione
+    setActionError(null);
+  } catch (err) {
+    console.error(err);
+    setActionError((err as any)?.message || "Errore durante la conferma dei vincitori.");
+  }
+}
 
   // ---------- RENDER LOBBY ----------
 
@@ -912,6 +976,26 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
       )}
     </div>
   )}
+  
+  {currentHand?.stage === "SHOWDOWN" && votingOpen && isHost && (
+    <button
+      onClick={handleConfirmWinners}
+      disabled={selectedWinners.length === 0}
+      style={{
+        marginTop: "0.5rem",
+        padding: "0.5rem 1rem",
+        borderRadius: "999px",
+        border: "none",
+        backgroundColor: selectedWinners.length > 0 ? "#22c55e" : "#4b5563",
+        color: "#020617",
+        fontSize: "0.85rem",
+        fontWeight: 600,
+        cursor: selectedWinners.length > 0 ? "pointer" : "default"
+      }}
+    >
+      Conferma vincitor{selectedWinners.length > 1 ? "i" : "e"} ({selectedWinners.length})
+    </button>
+  )}
 </div>
 
 
@@ -949,7 +1033,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                         : "rgba(15,23,42,0.9)",
                       border: isTurn
                         ? "2px solid #22c55e"
-                        : myVoteTargetId === p.userId && votingOpen
+                        : selectedWinners.includes(p.userId) && votingOpen  // ✅ Cambia questa condizione
                         ? "2px solid #22c55e"
                         : "1px solid #1e293b",
                       boxShadow: isTurn
@@ -963,7 +1047,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                     }}
                     onClick={() => {
                       if (votingOpen && currentHand?.stage === "SHOWDOWN") {
-                        handleVote(p.userId);
+                        toggleWinnerSelection(p.userId);  // ✅ Cambia da handleVote a toggleWinnerSelection
                       }
                     }}
                   >
@@ -1010,7 +1094,7 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
             borderTop: "1px solid #1e293b"
           }}
         >
-          {hasWinner && currentHand?.winnerId && (
+          {hasWinner && (
             <div
               style={{
                 padding: "0.6rem 0.8rem",
@@ -1029,13 +1113,28 @@ function applyQuickBet(type: "1BB" | "HALF_POT" | "POT") {
                   color: "#e5e7eb"
                 }}
               >
-                Vincitore della mano:{" "}
-                <strong>
-                  {(
-                    players.find((p) => p.userId === currentHand.winnerId)
-                      ?.displayName || "Sconosciuto"
-                  )}
-                </strong>
+                {currentHand?.winnerIds && currentHand.winnerIds.length > 1 ? (
+                  // Più vincitori (split pot)
+                  <>
+                    Vincitori della mano (split pot):{" "}
+                    <strong>
+                      {currentHand.winnerIds
+                        .map(wId => players.find(p => p.userId === wId)?.displayName || "Sconosciuto")
+                        .join(", ")}
+                    </strong>
+                  </>
+                ) : (
+                  // Singolo vincitore
+                  <>
+                    Vincitore della mano:{" "}
+                    <strong>
+                      {(
+                        players.find((p) => p.userId === currentHand.winnerId)
+                          ?.displayName || "Sconosciuto"
+                      )}
+                    </strong>
+                  </>
+                )}
               </div>
               {isHost && (
                 <button

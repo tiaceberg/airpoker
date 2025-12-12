@@ -37,11 +37,10 @@ export interface HandData {
   firstToActIndex: number;
   lastAggressorIndex?: number;
   votingOpen?: boolean;
-  winnerId?: string | null;
-  winnerIds?: string[];
-  confirmedAt?: any;
+  winnerId?: string | null;  // Per retrocompatibilità (singolo vincitore)
+  winnerIds?: string[];      // Array di vincitori (per split pot)
+  confirmedAt?: any;         // Timestamp di conferma
 }
-
 
 /**
  * Crea un nuovo tavolo e aggiunge l'utente come primo giocatore (seatIndex 0).
@@ -70,7 +69,7 @@ async function generateUniqueTableId(): Promise<string> {
   }
 }
 
-export async function createTable( CreateTableInput, user: User | null) {
+export async function createTable(data: CreateTableInput, user: User | null) {
   if (!user) {
     throw new Error("User non presente durante la creazione del tavolo");
   }
@@ -515,8 +514,8 @@ export type PlayerActionType = "CHECK" | "CALL" | "BET" | "FOLD";
  * LOGICA CHIUSURA ROUND:
  * 
  * PREFLOP:
- * - Se nessuno raisa: chiude quando il BB checka
- * - Se qualcuno raisa: chiude quando il giocatore prima del raiser calla
+ * - Il round chiude quando il giocatore PRIMA dell'ultimo aggressore ha agito
+ *   e tutti hanno matched la puntata
  * 
  * POST-FLOP (FLOP/TURN/RIVER):
  * - Se tutti checkano: chiude quando il giocatore prima dello SB checka
@@ -803,16 +802,16 @@ export async function playerAction(
   // impostiamo il winnerId direttamente (senza votazione)
   if (newStage === "SHOWDOWN" && activePlayers.length === 1) {
     handUpdate.winnerId = activePlayers[0].userId;
-    handUpdate.winnerIds = [activePlayers[0].userId];
+    handUpdate.winnerIds = [activePlayers[0].userId];  // ✅ Aggiungi anche questo
     handUpdate.votingOpen = false;
-    handUpdate.confirmedAt = serverTimestamp();
+    handUpdate.confirmedAt = serverTimestamp();  // ✅ Aggiungi anche questo
   }
+
 
   batch.update(handRef, handUpdate);
 
   await batch.commit();
 }
-
 
 /**
  * Avanza la mano allo stage successivo (PREFLOP -> FLOP -> TURN -> RIVER -> SHOWDOWN).
@@ -904,7 +903,7 @@ export async function advanceStage(tableId: string, user: User) {
     updateData.lastAggressorIndex = lastAggressorIndex;
   }
 
-  // Se passiamo a SHOWDOWN dopo il river
+  // Se passiamo a SHOWDOWN dopo il river, apriamo la votazione
   if (hand.stage === "RIVER" && nextStage === "SHOWDOWN") {
     // Controlliamo quanti giocatori sono ancora attivi
     const playersRef = collection(db, "tables", tableId, "players");
@@ -924,17 +923,30 @@ export async function advanceStage(tableId: string, user: User) {
       await updateDoc(winner.ref, { stack: newStack });
       
       updateData.winnerId = winner.id;
-      updateData.winnerIds = [winner.id];
+      updateData.winnerIds = [winner.id];  // ✅ Aggiungi anche questo
       updateData.votingOpen = false;
-      updateData.confirmedAt = serverTimestamp();
+      updateData.confirmedAt = serverTimestamp();  // ✅ Aggiungi anche questo
     } else {
       // Più di un giocatore: l'host dovrà confermare i vincitori
       updateData.votingOpen = true;
-      updateData.winnerIds = [];
+      updateData.winnerIds = [];  // ✅ Inizializza array vuoto
     }
   }
 
   await updateDoc(handRef, updateData);
+}
+
+/**
+ * DEPRECATA: Usa confirmWinners() invece.
+ * Mantenuta per retrocompatibilità con componenti esistenti.
+ */
+export async function voteWinner(
+  tableId: string,
+  user: User,
+  votedUserId: string
+) {
+  // Delega a confirmWinners con un singolo vincitore
+  return confirmWinners(tableId, user, [votedUserId]);
 }
 
 
@@ -985,7 +997,7 @@ export async function confirmWinners(
   const players = playersSnap.docs.map((d) => ({
     id: d.id,
     ref: d.ref,
-     d.data() as any
+    data: d.data() as any
   }));
 
   const validPlayerIds = players.map(p => p.id);
@@ -1035,3 +1047,5 @@ export async function confirmWinners(
 
   await batch.commit();
 }
+
+
