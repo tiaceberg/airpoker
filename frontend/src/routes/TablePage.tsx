@@ -19,7 +19,6 @@ import {
   setSittingOut,
   endGame,
   advanceStage,
-  voteWinner,
   confirmWinners,
   startNextHand
 } from "../lib/firestoreApi";
@@ -344,17 +343,6 @@ async function handleAdvanceStage() {
   }
 }
 
-async function handleVote(candidateUserId: string) {
-  if (!user || !tableId) return;
-  if (!currentHand || !votingOpen) return;
-  try {
-    await voteWinner(tableId, user, candidateUserId);
-  } catch (err) {
-    console.error(err);
-    setActionError((err as any)?.message || "Errore durante la votazione.");
-  }
-}
-
 async function handleNextHand() {
   if (!user || !tableId) return;
   if (!isHost) return;
@@ -373,7 +361,6 @@ async function handleNextHand() {
     );
   }
 }
-
 
 async function handleEndGame() {
   if (!isHost || !tableId) return;
