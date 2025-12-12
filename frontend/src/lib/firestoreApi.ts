@@ -37,8 +37,9 @@ export interface HandData {
   firstToActIndex: number;
   lastAggressorIndex?: number;
   votingOpen?: boolean;
-  votes?: Record<string, string>;
   winnerId?: string | null;
+  winnerIds?: string[];
+  confirmedAt?: any;
 }
 
 
@@ -69,7 +70,7 @@ async function generateUniqueTableId(): Promise<string> {
   }
 }
 
-export async function createTable(data: CreateTableInput, user: User | null) {
+export async function createTable( CreateTableInput, user: User | null) {
   if (!user) {
     throw new Error("User non presente durante la creazione del tavolo");
   }
@@ -514,8 +515,8 @@ export type PlayerActionType = "CHECK" | "CALL" | "BET" | "FOLD";
  * LOGICA CHIUSURA ROUND:
  * 
  * PREFLOP:
- * - Il round chiude quando il giocatore PRIMA dell'ultimo aggressore ha agito
- *   e tutti hanno matched la puntata
+ * - Se nessuno raisa: chiude quando il BB checka
+ * - Se qualcuno raisa: chiude quando il giocatore prima del raiser calla
  * 
  * POST-FLOP (FLOP/TURN/RIVER):
  * - Se tutti checkano: chiude quando il giocatore prima dello SB checka
@@ -802,13 +803,16 @@ export async function playerAction(
   // impostiamo il winnerId direttamente (senza votazione)
   if (newStage === "SHOWDOWN" && activePlayers.length === 1) {
     handUpdate.winnerId = activePlayers[0].userId;
+    handUpdate.winnerIds = [activePlayers[0].userId];
     handUpdate.votingOpen = false;
+    handUpdate.confirmedAt = serverTimestamp();
   }
 
   batch.update(handRef, handUpdate);
 
   await batch.commit();
 }
+
 
 /**
  * Avanza la mano allo stage successivo (PREFLOP -> FLOP -> TURN -> RIVER -> SHOWDOWN).
@@ -900,7 +904,7 @@ export async function advanceStage(tableId: string, user: User) {
     updateData.lastAggressorIndex = lastAggressorIndex;
   }
 
-  // Se passiamo a SHOWDOWN dopo il river, apriamo la votazione
+  // Se passiamo a SHOWDOWN dopo il river
   if (hand.stage === "RIVER" && nextStage === "SHOWDOWN") {
     // Controlliamo quanti giocatori sono ancora attivi
     const playersRef = collection(db, "tables", tableId, "players");
@@ -920,11 +924,13 @@ export async function advanceStage(tableId: string, user: User) {
       await updateDoc(winner.ref, { stack: newStack });
       
       updateData.winnerId = winner.id;
+      updateData.winnerIds = [winner.id];
       updateData.votingOpen = false;
+      updateData.confirmedAt = serverTimestamp();
     } else {
-      // Più di un giocatore: apriamo la votazione
+      // Più di un giocatore: l'host dovrà confermare i vincitori
       updateData.votingOpen = true;
-      updateData.votes = {};
+      updateData.winnerIds = [];
     }
   }
 
@@ -933,18 +939,32 @@ export async function advanceStage(tableId: string, user: User) {
 
 
 /**
- * Aggiunge o aggiorna il voto di un giocatore sul vincitore della mano.
- * Quando tutti hanno votato, assegna il piatto al vincitore.
+ * Permette all'host di confermare il/i vincitore/i della mano.
+ * Se ci sono più vincitori, il piatto viene diviso equamente tra loro.
+ * 
+ * @param tableId - ID del tavolo
+ * @param user - Utente che conferma (deve essere l'host)
+ * @param winnerIds - Array di userId dei vincitori selezionati
  */
-export async function voteWinner(
+export async function confirmWinners(
   tableId: string,
   user: User,
-  votedUserId: string
+  winnerIds: string[]
 ) {
+  if (!winnerIds || winnerIds.length === 0) {
+    throw new Error("Devi selezionare almeno un vincitore.");
+  }
+
   const tableRef = doc(db, "tables", tableId);
   const tableSnap = await getDoc(tableRef);
   if (!tableSnap.exists()) throw new Error("Tavolo inesistente.");
+  
   const tableData = tableSnap.data() as any;
+
+  // Solo l'host può confermare i vincitori
+  if (tableData.hostId !== user.uid) {
+    throw new Error("Solo l'host può confermare i vincitori.");
+  }
 
   const currentHandId = tableData.currentHandId;
   if (!currentHandId) throw new Error("Nessuna mano corrente.");
@@ -954,63 +974,64 @@ export async function voteWinner(
   if (!handSnap.exists()) throw new Error("Mano non trovata.");
 
   const hand = handSnap.data() as any as HandData;
-  if (!hand.votingOpen) throw new Error("Votazione non aperta per questa mano.");
+  
+  if (hand.stage !== "SHOWDOWN") {
+    throw new Error("Puoi confermare i vincitori solo durante lo SHOWDOWN.");
+  }
 
-  // Recuperiamo tutti i giocatori attivi al tavolo per sapere quanti devono votare
+  // Verifica che i vincitori selezionati siano giocatori validi
   const playersRef = collection(db, "tables", tableId, "players");
   const playersSnap = await getDocs(playersRef);
-  const players = playersSnap.docs.map((d) => d.data() as any);
+  const players = playersSnap.docs.map((d) => ({
+    id: d.id,
+    ref: d.ref,
+     d.data() as any
+  }));
 
-  const totalVoters = players.filter((p) => !p.isSittingOut).length || players.length;
-
-  const currentVotes: Record<string, string> = { ...(hand.votes || {}) };
-  currentVotes[user.uid] = votedUserId;
-
-  // Conta i voti per ciascun candidato
-  const counts: Record<string, number> = {};
-  Object.values(currentVotes).forEach((candidateId) => {
-    counts[candidateId] = (counts[candidateId] || 0) + 1;
-  });
-
-  const votesCount = Object.keys(currentVotes).length;
-
-  let winnerId: string | null = null;
-
-  // Se hanno votato tutti, scegliamo il candidato con più voti
-  if (votesCount >= totalVoters) {
-    let maxVotes = -1;
-    for (const [candidateId, c] of Object.entries(counts)) {
-      if (c > maxVotes) {
-        maxVotes = c;
-        winnerId = candidateId;
-      }
-    }
+  const validPlayerIds = players.map(p => p.id);
+  const invalidWinners = winnerIds.filter(id => !validPlayerIds.includes(id));
+  
+  if (invalidWinners.length > 0) {
+    throw new Error("Uno o più vincitori selezionati non sono giocatori validi.");
   }
+
+  const pot = hand.pot || 0;
+  const numWinners = winnerIds.length;
+  
+  // Calcola la quota per ogni vincitore (dividi equamente il piatto)
+  const sharePerWinner = Math.floor(pot / numWinners);
+  const remainder = pot % numWinners; // Eventuali chip rimanenti
 
   const batch = writeBatch(db);
 
-  // Aggiorna la mano con voti e, se presente, winnerId e chiusura votazione
+  // Distribuisci il piatto ai vincitori
+  winnerIds.forEach((winnerId, index) => {
+    const winner = players.find(p => p.id === winnerId);
+    if (winner) {
+      const currentStack = Number(winner.data.stack) || 0;
+      // Il primo vincitore prende anche l'eventuale resto
+      const winAmount = sharePerWinner + (index === 0 ? remainder : 0);
+      const newStack = currentStack + winAmount;
+      
+      batch.update(winner.ref, { stack: newStack });
+    }
+  });
+
+  // Aggiorna la mano: imposta i vincitori e chiude la votazione
   const handUpdate: any = {
-    votes: currentVotes
+    winnerIds: winnerIds, // Array di vincitori
+    votingOpen: false,
+    confirmedAt: serverTimestamp()
   };
 
-  if (winnerId) {
-    handUpdate.winnerId = winnerId;
-    handUpdate.votingOpen = false;
+  // Manteniamo anche winnerId per retrocompatibilità (primo vincitore)
+  if (winnerIds.length === 1) {
+    handUpdate.winnerId = winnerIds[0];
+  } else {
+    handUpdate.winnerId = null; // Split pot
   }
 
   batch.update(handRef, handUpdate);
-
-  // Se abbiamo un vincitore, trasferiamo il piatto
-  if (winnerId) {
-    const winnerPlayerRef = doc(db, "tables", tableId, "players", winnerId);
-    const winnerSnap = await getDoc(winnerPlayerRef);
-    if (winnerSnap.exists()) {
-      const winnerData = winnerSnap.data() as any;
-      const newStack = (Number(winnerData.stack) || 0) + (hand.pot || 0);
-      batch.update(winnerPlayerRef, { stack: newStack });
-    }
-  }
 
   await batch.commit();
 }
